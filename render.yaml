@@ -1,0 +1,23 @@
+
+services:
+  - type: web
+    name: stream-server
+    env: ubuntu
+    region: oregon
+    plan: starter
+    buildCommand: |
+      apt-get update
+      apt-get install -y ffmpeg nginx curl bash
+      chmod +x render-start.sh
+      chmod +x perfect_stream.sh
+      mkdir -p stream/logs
+    startCommand: "./render-start.sh"
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: RENDER
+        value: "true"
+      - key: APP_NAME
+        value: stream-server
+    healthCheckPath: /health
+    autoDeploy: false
