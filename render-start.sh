@@ -1,5 +1,5 @@
 
-#!/bin/bash
+#!/usr/bin/env bash
 
 echo "🚀 Starting Multi-Stream Server on Render..."
 
@@ -19,4 +19,4 @@ echo "📦 All dependencies ready on Render"
 echo "🌐 Starting on port $PORT"
 
 # تشغيل السكريبت الرئيسي
-exec ./perfect_stream.sh
+exec bash ./perfect_stream.sh
