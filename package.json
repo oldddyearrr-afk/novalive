@@ -1,0 +1,12 @@
+
+{
+  "name": "multi-stream-server",
+  "version": "1.0.0",
+  "description": "Dynamic Multi-Stream HLS Server",
+  "scripts": {
+    "start": "./render-start.sh"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
