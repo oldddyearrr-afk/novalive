@@ -1,5 +1,5 @@
 
-#!/bin/bash
+#!/usr/bin/env bash
 
 # تحسين شامل لـ Render مع ذاكرة محدودة 512MB
 echo "🚀 Render-Optimized Multi-Stream Server v6.0 (512MB)"
