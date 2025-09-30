@@ -86,8 +86,8 @@ cleanup_unused_directories() {
         done
     fi
 
-    # تنظيف ملفات الـ segments القديمة لتوفير مساحة (> دقيقة واحدة)
-    find "$STREAM_DIR" -name "*.ts" -mmin +1 -delete 2>/dev/null || true
+    # تنظيف ملفات الـ segments القديمة لتوفير مساحة (> دقيقة ونصف)
+    find "$STREAM_DIR" -name "*.ts" -mmin +1.5 -delete 2>/dev/null || true
     
     echo "✅ تم التنظيف وتوفير الذاكرة"
 }
@@ -245,8 +245,8 @@ for i in "${!SOURCE_URLS[@]}"; do
 
     echo "📁 إعداد: $STREAM_NAME"
     mkdir -p "$HLS_DIR" 2>/dev/null || true
-    # تنظيف segments قديمة (> دقيقتين)
-    find "$HLS_DIR" -name "*.ts" -mmin +2 -delete 2>/dev/null || true
+    # تنظيف segments قديمة (> دقيقة ونصف)
+    find "$HLS_DIR" -name "*.ts" -mmin +1.5 -delete 2>/dev/null || true
 done
 
 echo "🌐 بدء nginx محسن للذاكرة..."
@@ -258,9 +258,15 @@ sleep 1
 if command -v node >/dev/null 2>&1; then
     echo "🔗 بدء P2P Signaling Server على المنفذ 9000..."
     export SIGNALING_PORT=9000
+    export BIND_HOST=127.0.0.1
     node signaling-server.js > "$LOGS_DIR/signaling.log" 2>&1 &
     SIGNALING_PID=$!
-    echo "✅ Signaling Server PID: $SIGNALING_PID"
+    sleep 1
+    if kill -0 $SIGNALING_PID 2>/dev/null; then
+        echo "✅ Signaling Server PID: $SIGNALING_PID (يعمل)"
+    else
+        echo "❌ فشل تشغيل Signaling Server - تحقق من $LOGS_DIR/signaling.log"
+    fi
 else
     echo "⚠️ Node.js غير متوفر - P2P معطل"
     SIGNALING_PID=""
@@ -335,11 +341,11 @@ start_ffmpeg() {
             \
             -map 0:v -map 0:a \
             -c:v copy -c:a copy \
-            -f hls -hls_time 6 -hls_list_size 8 \
+            -f hls -hls_time 3 -hls_list_size 20 \
             -hls_flags delete_segments+independent_segments \
             -hls_segment_type mpegts \
             -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
-            -hls_delete_threshold 3 \
+            -hls_delete_threshold 5 \
             "$hls_dir/source/index.m3u8" \
             \
             -map 0:v -map 0:a \
@@ -350,11 +356,11 @@ start_ffmpeg() {
             -g 60 -keyint_min 30 -sc_threshold 0 \
             -c:a aac -b:a 64k -ac 2 -ar 44100 \
             -threads 1 \
-            -f hls -hls_time 6 -hls_list_size 8 \
+            -f hls -hls_time 3 -hls_list_size 20 \
             -hls_flags delete_segments+independent_segments \
             -hls_segment_type mpegts \
             -hls_segment_filename "$hls_dir/alt/${stream_name}_720p_%05d.ts" \
-            -hls_delete_threshold 3 \
+            -hls_delete_threshold 5 \
             "$hls_dir/alt/index.m3u8" \
             > /dev/null 2>&1 &
         
@@ -391,11 +397,11 @@ MASTER_EOF
             \
             -map 0:v -map 0:a \
             -c:v copy -c:a copy \
-            -f hls -hls_time 6 -hls_list_size 8 \
+            -f hls -hls_time 3 -hls_list_size 20 \
             -hls_flags delete_segments+independent_segments \
             -hls_segment_type mpegts \
             -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
-            -hls_delete_threshold 3 \
+            -hls_delete_threshold 5 \
             "$hls_dir/source/index.m3u8" \
             \
             -map 0:v -map 0:a \
@@ -406,11 +412,11 @@ MASTER_EOF
             -g 60 -keyint_min 30 -sc_threshold 0 \
             -c:a aac -b:a 48k -ac 2 -ar 44100 \
             -threads 1 \
-            -f hls -hls_time 6 -hls_list_size 8 \
+            -f hls -hls_time 3 -hls_list_size 20 \
             -hls_flags delete_segments+independent_segments \
             -hls_segment_type mpegts \
             -hls_segment_filename "$hls_dir/alt/${stream_name}_480p_%05d.ts" \
-            -hls_delete_threshold 3 \
+            -hls_delete_threshold 5 \
             "$hls_dir/alt/index.m3u8" \
             > /dev/null 2>&1 &
         
@@ -507,11 +513,11 @@ monitor_ffmpeg() {
                     \
                     -map 0:v -map 0:a \
                     -c:v copy -c:a copy \
-                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -f hls -hls_time 3 -hls_list_size 20 \
                     -hls_flags delete_segments+independent_segments \
                     -hls_segment_type mpegts \
                     -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
-                    -hls_delete_threshold 3 \
+                    -hls_delete_threshold 5 \
                     "$hls_dir/source/index.m3u8" \
                     \
                     -map 0:v -map 0:a \
@@ -522,11 +528,11 @@ monitor_ffmpeg() {
                     -g 60 -keyint_min 30 -sc_threshold 0 \
                     -c:a aac -b:a 64k -ac 2 -ar 44100 \
                     -threads 1 \
-                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -f hls -hls_time 3 -hls_list_size 20 \
                     -hls_flags delete_segments+independent_segments \
                     -hls_segment_type mpegts \
                     -hls_segment_filename "$hls_dir/alt/${stream_name}_720p_%05d.ts" \
-                    -hls_delete_threshold 3 \
+                    -hls_delete_threshold 5 \
                     "$hls_dir/alt/index.m3u8" \
                     > /dev/null 2>&1 &
                 
@@ -559,11 +565,11 @@ MASTER_EOF
                     \
                     -map 0:v -map 0:a \
                     -c:v copy -c:a copy \
-                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -f hls -hls_time 3 -hls_list_size 20 \
                     -hls_flags delete_segments+independent_segments \
                     -hls_segment_type mpegts \
                     -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
-                    -hls_delete_threshold 3 \
+                    -hls_delete_threshold 5 \
                     "$hls_dir/source/index.m3u8" \
                     \
                     -map 0:v -map 0:a \
@@ -574,11 +580,11 @@ MASTER_EOF
                     -g 60 -keyint_min 30 -sc_threshold 0 \
                     -c:a aac -b:a 48k -ac 2 -ar 44100 \
                     -threads 1 \
-                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -f hls -hls_time 3 -hls_list_size 20 \
                     -hls_flags delete_segments+independent_segments \
                     -hls_segment_type mpegts \
                     -hls_segment_filename "$hls_dir/alt/${stream_name}_480p_%05d.ts" \
-                    -hls_delete_threshold 3 \
+                    -hls_delete_threshold 5 \
                     "$hls_dir/alt/index.m3u8" \
                     > /dev/null 2>&1 &
                 
@@ -629,8 +635,8 @@ trap cleanup SIGTERM SIGINT
 while true; do
     sleep 90
     
-    # تنظيف دوري للذاكرة (حذف segments > دقيقة ونصف)
-    find "$STREAM_DIR" -name "*.ts" -mmin +2 -delete 2>/dev/null || true
+    # تنظيف دوري للذاكرة (حذف segments > دقيقة ونصف للأمان)
+    find "$STREAM_DIR" -name "*.ts" -mmin +1.5 -delete 2>/dev/null || true
     
     running_count=0
     for pid in "${FFMPEG_PIDS[@]}"; do
