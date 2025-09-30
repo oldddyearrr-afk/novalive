@@ -7,13 +7,14 @@ services:
     plan: starter
     buildCommand: |
       apt-get update
-      apt-get install -y ffmpeg nginx curl bash dos2unix
+      apt-get install -y ffmpeg nginx curl bash dos2unix nodejs npm
       apt-get clean
       rm -rf /var/lib/apt/lists/*
+      npm install
       dos2unix render-start.sh perfect_stream.sh
       chmod +x render-start.sh
       chmod +x perfect_stream.sh
-      mkdir -p stream/logs
+      mkdir -p stream/logs public
     startCommand: "bash ./render-start.sh"
     envVars:
       - key: PORT
@@ -30,4 +31,3 @@ services:
       name: stream-data
       mountPath: /app/stream
       sizeGB: 1
-      
