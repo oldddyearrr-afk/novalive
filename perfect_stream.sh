@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 # تحسين شامل لـ Render مع ذاكرة محدودة 512MB
@@ -54,6 +53,12 @@ NGINX_CONF="$WORK_DIR/nginx.conf"
 PORT=${PORT:-10000}
 HOST="0.0.0.0"
 
+# كشف بيئة Replit
+if [ "$REPL_SLUG" ]; then
+    echo "🔧 Replit environment detected"
+    export REPLIT=true
+fi
+
 declare -a FFMPEG_PIDS=()
 declare -a MONITOR_PIDS=()
 
@@ -81,8 +86,8 @@ cleanup_unused_directories() {
         done
     fi
 
-    # تنظيف ملفات الـ segments القديمة لتوفير مساحة
-    find "$STREAM_DIR" -name "*.ts" -mtime +1 -delete 2>/dev/null || true
+    # تنظيف ملفات الـ segments القديمة لتوفير مساحة (> دقيقة واحدة)
+    find "$STREAM_DIR" -name "*.ts" -mmin +1 -delete 2>/dev/null || true
     
     echo "✅ تم التنظيف وتوفير الذاكرة"
 }
@@ -156,7 +161,7 @@ EOF
         local stream_name="${STREAM_NAMES[$i]}"
         cat >> "$NGINX_CONF" << STREAMEOF
 
-        # Stream: $stream_name (جودتين فقط لتوفير الذاكرة)
+        # Stream: $stream_name (كشف تلقائي للجودة)
         location /$stream_name/ {
             alias $WORK_DIR/stream/$stream_name/;
             
@@ -174,31 +179,45 @@ EOF
                 expires 6s;
             }
 
-            location /$stream_name/ultra/ {
-                alias $WORK_DIR/stream/$stream_name/ultra/;
+            location /$stream_name/source/ {
+                alias $WORK_DIR/stream/$stream_name/source/;
             }
 
-            location /$stream_name/high/ {
-                alias $WORK_DIR/stream/$stream_name/high/;
+            location /$stream_name/alt/ {
+                alias $WORK_DIR/stream/$stream_name/alt/;
             }
         }
 STREAMEOF
     done
 
-    cat >> "$NGINX_CONF" << 'EOF'
+    cat >> "$NGINX_CONF" << EOF
+
+        # P2P WebSocket Signaling Proxy
+        location /ws {
+            proxy_pass http://127.0.0.1:9000;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host \$host;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_read_timeout 86400;
+        }
+
+        # P2P Player & Static Files
+        location / {
+            root $WORK_DIR/public;
+            try_files \$uri \$uri/ /player.html;
+            add_header Cache-Control "public, max-age=300";
+        }
 
         location /api/status {
-            return 200 '{"status":"running","memory":"512MB-optimized"}';
+            return 200 '{"status":"running","memory":"512MB-optimized","p2p":"enabled"}';
             add_header Content-Type application/json;
         }
 
-        location / {
-            return 200 'Render Optimized Stream Server Running';
-            add_header Content-Type text/plain;
-        }
-
         location /health {
-            return 200 'OK - Memory Optimized';
+            return 200 'OK - P2P Enabled';
             add_header Content-Type text/plain;
         }
     }
@@ -219,8 +238,8 @@ for i in "${!SOURCE_URLS[@]}"; do
 
     echo "📁 إعداد: $STREAM_NAME"
     mkdir -p "$HLS_DIR" 2>/dev/null || true
-    # تنظيف أقل تدخلاً
-    find "$HLS_DIR" -name "*.ts" -mmin +5 -delete 2>/dev/null || true
+    # تنظيف segments قديمة (> دقيقتين)
+    find "$HLS_DIR" -name "*.ts" -mmin +2 -delete 2>/dev/null || true
 done
 
 echo "🌐 بدء nginx محسن للذاكرة..."
@@ -228,75 +247,182 @@ nginx -c "$NGINX_CONF" &
 NGINX_PID=$!
 sleep 1
 
-# دالة FFmpeg محسنة للذاكرة (جودتين فقط)
+# بدء P2P Signaling Server
+if command -v node >/dev/null 2>&1; then
+    echo "🔗 بدء P2P Signaling Server على المنفذ 9000..."
+    export SIGNALING_PORT=9000
+    node signaling-server.js > "$LOGS_DIR/signaling.log" 2>&1 &
+    SIGNALING_PID=$!
+    echo "✅ Signaling Server PID: $SIGNALING_PID"
+else
+    echo "⚠️ Node.js غير متوفر - P2P معطل"
+    SIGNALING_PID=""
+fi
+
+# دالة كشف جودة المصدر باستخدام ffprobe
+detect_source_resolution() {
+    local source_url=$1
+    
+    echo "🔍 كشف جودة الفيديو المصدر..."
+    
+    # محاولة أولى مع headers كاملة
+    local height=$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream=height \
+        -of default=noprint_wrappers=1:nokey=1 \
+        -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+        -headers "Referer: https://google.com"$'\r\n'"Accept: */*"$'\r\n'"Connection: keep-alive"$'\r\n' \
+        -timeout 15000000 \
+        -rw_timeout 15000000 \
+        "$source_url" 2>&1 | grep -E '^[0-9]+$' | head -1)
+    
+    if [ -z "$height" ]; then
+        echo "⚠️ فشل كشف الجودة للرابط: $source_url"
+        echo "⚠️ استخدام 1080p افتراضياً"
+        echo "1080"
+        return
+    fi
+    
+    if [ "$height" -ge 1080 ]; then
+        echo "✅ المصدر: 1080p (${height}p)"
+        echo "1080"
+    elif [ "$height" -ge 720 ]; then
+        echo "✅ المصدر: 720p (${height}p)"
+        echo "720"
+    else
+        echo "⚠️ جودة غير معروفة ($height)، استخدام 720p افتراضياً"
+        echo "720"
+    fi
+}
+
+# دالة FFmpeg محسنة للذاكرة (نسخ جودة المصدر + جودة إضافية)
 start_ffmpeg() {
     local stream_index=$1
     local source_url="${SOURCE_URLS[$stream_index]}"
     local stream_name="${STREAM_NAMES[$stream_index]}"
     local hls_dir="$STREAM_DIR/${stream_name}"
 
-    echo "📺 بدء $stream_name (جودتين محسنتين للذاكرة)..."
+    echo "📺 بدء $stream_name (كشف تلقائي للجودة)..."
+    
+    # كشف جودة المصدر
+    local source_res=$(detect_source_resolution "$source_url")
 
-    mkdir -p "$hls_dir/ultra" "$hls_dir/high" 2>/dev/null || true
+    mkdir -p "$hls_dir/source" "$hls_dir/alt" 2>/dev/null || true
 
-    # إعدادات محسنة للذاكرة المحدودة
-    ffmpeg -hide_banner -loglevel error \
-        -fflags +genpts+discardcorrupt \
-        -user_agent "Mozilla/5.0" \
-        -reconnect 1 -reconnect_at_eof 1 \
-        -reconnect_delay_max 2 \
-        -timeout 15000000 \
-        -analyzeduration 500000 \
-        -probesize 500000 \
-        -thread_queue_size 256 \
-        -i "$source_url" \
-        \
-        -filter_complex "[0:v]split=2[v1][v2]; \
-                        [v1]scale=1920:1080:flags=fast_bilinear[v1080p]; \
-                        [v2]scale=1280:720:flags=fast_bilinear[v720p]" \
-        \
-        -map "[v1080p]" -map 0:a \
-        -c:v libx264 -preset ultrafast -tune zerolatency \
-        -profile:v main -level 3.1 \
-        -b:v 3000k -maxrate 3300k -bufsize 2000k \
-        -g 50 -keyint_min 25 -sc_threshold 0 \
-        -c:a aac -b:a 96k -ac 2 -ar 44100 \
-        -threads 2 \
-        -f hls -hls_time 3 -hls_list_size 4 \
-        -hls_flags delete_segments+independent_segments \
-        -hls_segment_filename "$hls_dir/ultra/${stream_name}_1080p_%03d.ts" \
-        -hls_delete_threshold 1 \
-        "$hls_dir/ultra/index.m3u8" \
-        \
-        -map "[v720p]" -map 0:a \
-        -c:v libx264 -preset ultrafast -tune zerolatency \
-        -profile:v main -level 3.0 \
-        -b:v 1500k -maxrate 1650k -bufsize 1000k \
-        -g 50 -keyint_min 25 -sc_threshold 0 \
-        -c:a aac -b:a 64k -ac 2 -ar 44100 \
-        -threads 1 \
-        -f hls -hls_time 3 -hls_list_size 4 \
-        -hls_flags delete_segments+independent_segments \
-        -hls_segment_filename "$hls_dir/high/${stream_name}_720p_%03d.ts" \
-        -hls_delete_threshold 1 \
-        "$hls_dir/high/index.m3u8" \
-        > /dev/null 2>&1 &
-
-    local ffmpeg_pid=$!
-    FFMPEG_PIDS[$stream_index]=$ffmpeg_pid
-
-    # Master Playlist مبسط
-    cat > "$hls_dir/master.m3u8" << MASTER_EOF
+    # تحديد الجودات بناءً على المصدر
+    if [ "$source_res" = "1080" ]; then
+        # المصدر 1080p: ننسخ الأصلي مباشرة + نضيف 720p
+        echo "📊 إعداد: نسخ مباشر 1080p + إضافة 720p"
+        
+        ffmpeg -hide_banner -loglevel warning \
+            -fflags +genpts+discardcorrupt+igndts \
+            -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            -headers "Referer: https://google.com"$'\r\n'"Accept: */*"$'\r\n'"Connection: keep-alive"$'\r\n' \
+            -reconnect 1 -reconnect_at_eof 1 \
+            -reconnect_streamed 1 -reconnect_delay_max 5 \
+            -timeout 25000000 \
+            -rw_timeout 25000000 \
+            -analyzeduration 3000000 \
+            -probesize 3000000 \
+            -thread_queue_size 512 \
+            -i "$source_url" \
+            \
+            -map 0:v -map 0:a \
+            -c:v copy -c:a copy \
+            -f hls -hls_time 6 -hls_list_size 8 \
+            -hls_flags delete_segments+independent_segments \
+            -hls_segment_type mpegts \
+            -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
+            -hls_delete_threshold 3 \
+            "$hls_dir/source/index.m3u8" \
+            \
+            -map 0:v -map 0:a \
+            -vf "scale=1280:720:flags=fast_bilinear" \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -profile:v main -level 3.0 \
+            -b:v 1500k -maxrate 1650k -bufsize 1000k \
+            -g 60 -keyint_min 30 -sc_threshold 0 \
+            -c:a aac -b:a 64k -ac 2 -ar 44100 \
+            -threads 1 \
+            -f hls -hls_time 6 -hls_list_size 8 \
+            -hls_flags delete_segments+independent_segments \
+            -hls_segment_type mpegts \
+            -hls_segment_filename "$hls_dir/alt/${stream_name}_720p_%05d.ts" \
+            -hls_delete_threshold 3 \
+            "$hls_dir/alt/index.m3u8" \
+            > /dev/null 2>&1 &
+        
+        local ffmpeg_pid=$!
+        FFMPEG_PIDS[$stream_index]=$ffmpeg_pid
+        
+        # Master Playlist
+        cat > "$hls_dir/master.m3u8" << MASTER_EOF
 #EXTM3U
 #EXT-X-VERSION:6
 #EXT-X-INDEPENDENT-SEGMENTS
-#EXT-X-STREAM-INF:BANDWIDTH=3096000,RESOLUTION=1920x1080,CODECS="avc1.4d401f,mp4a.40.2"
-ultra/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+source/index.m3u8
 #EXT-X-STREAM-INF:BANDWIDTH=1564000,RESOLUTION=1280x720,CODECS="avc1.4d401e,mp4a.40.2"
-high/index.m3u8
+alt/index.m3u8
 MASTER_EOF
+        
+    else
+        # المصدر 720p: ننسخ الأصلي مباشرة + نضيف 1080p
+        echo "📊 إعداد: نسخ مباشر 720p + إضافة 1080p"
+        
+        ffmpeg -hide_banner -loglevel warning \
+            -fflags +genpts+discardcorrupt+igndts \
+            -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            -headers "Referer: https://google.com"$'\r\n'"Accept: */*"$'\r\n'"Connection: keep-alive"$'\r\n' \
+            -reconnect 1 -reconnect_at_eof 1 \
+            -reconnect_streamed 1 -reconnect_delay_max 5 \
+            -timeout 25000000 \
+            -rw_timeout 25000000 \
+            -analyzeduration 3000000 \
+            -probesize 3000000 \
+            -thread_queue_size 512 \
+            -i "$source_url" \
+            \
+            -map 0:v -map 0:a \
+            -c:v copy -c:a copy \
+            -f hls -hls_time 6 -hls_list_size 8 \
+            -hls_flags delete_segments+independent_segments \
+            -hls_segment_type mpegts \
+            -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
+            -hls_delete_threshold 3 \
+            "$hls_dir/source/index.m3u8" \
+            \
+            -map 0:v -map 0:a \
+            -vf "scale=1920:1080:flags=fast_bilinear" \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
+            -profile:v main -level 3.1 \
+            -b:v 3000k -maxrate 3300k -bufsize 2000k \
+            -g 60 -keyint_min 30 -sc_threshold 0 \
+            -c:a aac -b:a 96k -ac 2 -ar 44100 \
+            -threads 1 \
+            -f hls -hls_time 6 -hls_list_size 8 \
+            -hls_flags delete_segments+independent_segments \
+            -hls_segment_type mpegts \
+            -hls_segment_filename "$hls_dir/alt/${stream_name}_1080p_%05d.ts" \
+            -hls_delete_threshold 3 \
+            "$hls_dir/alt/index.m3u8" \
+            > /dev/null 2>&1 &
+        
+        local ffmpeg_pid=$!
+        FFMPEG_PIDS[$stream_index]=$ffmpeg_pid
+        
+        # Master Playlist
+        cat > "$hls_dir/master.m3u8" << MASTER_EOF
+#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+source/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=3096000,RESOLUTION=1920x1080,CODECS="avc1.4d401f,mp4a.40.2"
+alt/index.m3u8
+MASTER_EOF
+    fi
 
-    echo "✅ $stream_name جاهز (محسن للذاكرة)"
+    echo "✅ $stream_name جاهز (نسخ مباشر من المصدر)"
 }
 
 # بدء جميع عمليات FFmpeg
@@ -308,18 +434,30 @@ done
 echo "✅ خادم محسن للذاكرة جاهز!"
 echo "🌐 الرابط المحلي: http://0.0.0.0:$PORT"
 
-# عرض روابط Render
+# عرض روابط حسب البيئة
 if [ "$RENDER" = "true" ]; then
     APP_NAME=${APP_NAME:-stream-server}
     echo "🔗 Render URL: https://$APP_NAME.onrender.com"
     echo "🔍 Health Check: https://$APP_NAME.onrender.com/health"
     echo ""
-    echo "📡 روابط البث المحسنة:"
+    echo "📡 روابط البث (كشف تلقائي للجودة):"
     for i in "${!STREAM_NAMES[@]}"; do
         echo "📺 ${STREAM_NAMES[$i]}:"
         echo "   🎯 Adaptive: https://$APP_NAME.onrender.com/${STREAM_NAMES[$i]}/master.m3u8"
-        echo "   🔥 1080p: https://$APP_NAME.onrender.com/${STREAM_NAMES[$i]}/ultra/index.m3u8"
-        echo "   🔸 720p: https://$APP_NAME.onrender.com/${STREAM_NAMES[$i]}/high/index.m3u8"
+        echo "   📥 Source: https://$APP_NAME.onrender.com/${STREAM_NAMES[$i]}/source/index.m3u8"
+        echo "   🔄 Alt: https://$APP_NAME.onrender.com/${STREAM_NAMES[$i]}/alt/index.m3u8"
+        echo ""
+    done
+elif [ "$REPLIT" = "true" ]; then
+    echo "🔗 Replit Preview: https://$REPL_SLUG--$REPL_OWNER.replit.app"
+    echo "🔍 Health Check: https://$REPL_SLUG--$REPL_OWNER.replit.app/health"
+    echo ""
+    echo "📡 روابط البث (كشف تلقائي للجودة):"
+    for i in "${!STREAM_NAMES[@]}"; do
+        echo "📺 ${STREAM_NAMES[$i]}:"
+        echo "   🎯 Adaptive: https://$REPL_SLUG--$REPL_OWNER.replit.app/${STREAM_NAMES[$i]}/master.m3u8"
+        echo "   📥 Source: https://$REPL_SLUG--$REPL_OWNER.replit.app/${STREAM_NAMES[$i]}/source/index.m3u8"
+        echo "   🔄 Alt: https://$REPL_SLUG--$REPL_OWNER.replit.app/${STREAM_NAMES[$i]}/alt/index.m3u8"
         echo ""
     done
 fi
@@ -338,62 +476,117 @@ monitor_ffmpeg() {
         sleep 20
         if ! kill -0 ${FFMPEG_PIDS[$stream_index]} 2>/dev/null; then
             echo "🔄 إعادة تشغيل $stream_name..."
+            
+            # كشف جودة المصدر
+            local source_res=$(detect_source_resolution "$source_url")
 
-            mkdir -p "$hls_dir/ultra" "$hls_dir/high" 2>/dev/null || true
+            mkdir -p "$hls_dir/source" "$hls_dir/alt" 2>/dev/null || true
 
-            ffmpeg -hide_banner -loglevel error \
-                -fflags +genpts+discardcorrupt \
-                -user_agent "Mozilla/5.0" \
-                -reconnect 1 -reconnect_at_eof 1 \
-                -reconnect_delay_max 2 \
-                -timeout 15000000 \
-                -analyzeduration 500000 \
-                -probesize 500000 \
-                -thread_queue_size 256 \
-                -i "$source_url" \
-                \
-                -filter_complex "[0:v]split=2[v1][v2]; \
-                                [v1]scale=1920:1080:flags=fast_bilinear[v1080p]; \
-                                [v2]scale=1280:720:flags=fast_bilinear[v720p]" \
-                \
-                -map "[v1080p]" -map 0:a \
-                -c:v libx264 -preset ultrafast -tune zerolatency \
-                -profile:v main -level 3.1 \
-                -b:v 3000k -maxrate 3300k -bufsize 2000k \
-                -g 50 -keyint_min 25 -sc_threshold 0 \
-                -c:a aac -b:a 96k -ac 2 -ar 44100 \
-                -threads 2 \
-                -f hls -hls_time 3 -hls_list_size 4 \
-                -hls_flags delete_segments+independent_segments \
-                -hls_segment_filename "$hls_dir/ultra/${stream_name}_1080p_%03d.ts" \
-                -hls_delete_threshold 1 \
-                "$hls_dir/ultra/index.m3u8" \
-                \
-                -map "[v720p]" -map 0:a \
-                -c:v libx264 -preset ultrafast -tune zerolatency \
-                -profile:v main -level 3.0 \
-                -b:v 1500k -maxrate 1650k -bufsize 1000k \
-                -g 50 -keyint_min 25 -sc_threshold 0 \
-                -c:a aac -b:a 64k -ac 2 -ar 44100 \
-                -threads 1 \
-                -f hls -hls_time 3 -hls_list_size 4 \
-                -hls_flags delete_segments+independent_segments \
-                -hls_segment_filename "$hls_dir/high/${stream_name}_720p_%03d.ts" \
-                -hls_delete_threshold 1 \
-                "$hls_dir/high/index.m3u8" \
-                > /dev/null 2>&1 &
-
-            FFMPEG_PIDS[$stream_index]=$!
-
-            cat > "$hls_dir/master.m3u8" << MASTER_EOF
+            # تحديد الجودات بناءً على المصدر
+            if [ "$source_res" = "1080" ]; then
+                # المصدر 1080p: ننسخ الأصلي مباشرة + نضيف 720p
+                ffmpeg -hide_banner -loglevel warning \
+                    -fflags +genpts+discardcorrupt+igndts \
+                    -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+                    -headers "Referer: https://google.com"$'\r\n'"Accept: */*"$'\r\n'"Connection: keep-alive"$'\r\n' \
+                    -reconnect 1 -reconnect_at_eof 1 \
+                    -reconnect_streamed 1 -reconnect_delay_max 5 \
+                    -timeout 25000000 \
+                    -rw_timeout 25000000 \
+                    -analyzeduration 3000000 \
+                    -probesize 3000000 \
+                    -thread_queue_size 512 \
+                    -i "$source_url" \
+                    \
+                    -map 0:v -map 0:a \
+                    -c:v copy -c:a copy \
+                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -hls_flags delete_segments+independent_segments \
+                    -hls_segment_type mpegts \
+                    -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
+                    -hls_delete_threshold 3 \
+                    "$hls_dir/source/index.m3u8" \
+                    \
+                    -map 0:v -map 0:a \
+                    -vf "scale=1280:720:flags=fast_bilinear" \
+                    -c:v libx264 -preset ultrafast -tune zerolatency \
+                    -profile:v main -level 3.0 \
+                    -b:v 1500k -maxrate 1650k -bufsize 1000k \
+                    -g 60 -keyint_min 30 -sc_threshold 0 \
+                    -c:a aac -b:a 64k -ac 2 -ar 44100 \
+                    -threads 1 \
+                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -hls_flags delete_segments+independent_segments \
+                    -hls_segment_type mpegts \
+                    -hls_segment_filename "$hls_dir/alt/${stream_name}_720p_%05d.ts" \
+                    -hls_delete_threshold 3 \
+                    "$hls_dir/alt/index.m3u8" \
+                    > /dev/null 2>&1 &
+                
+                FFMPEG_PIDS[$stream_index]=$!
+                
+                cat > "$hls_dir/master.m3u8" << MASTER_EOF
 #EXTM3U
 #EXT-X-VERSION:6
 #EXT-X-INDEPENDENT-SEGMENTS
-#EXT-X-STREAM-INF:BANDWIDTH=3096000,RESOLUTION=1920x1080,CODECS="avc1.4d401f,mp4a.40.2"
-ultra/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+source/index.m3u8
 #EXT-X-STREAM-INF:BANDWIDTH=1564000,RESOLUTION=1280x720,CODECS="avc1.4d401e,mp4a.40.2"
-high/index.m3u8
+alt/index.m3u8
 MASTER_EOF
+                
+            else
+                # المصدر 720p: ننسخ الأصلي مباشرة + نضيف 1080p
+                ffmpeg -hide_banner -loglevel warning \
+                    -fflags +genpts+discardcorrupt+igndts \
+                    -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+                    -headers "Referer: https://google.com"$'\r\n'"Accept: */*"$'\r\n'"Connection: keep-alive"$'\r\n' \
+                    -reconnect 1 -reconnect_at_eof 1 \
+                    -reconnect_streamed 1 -reconnect_delay_max 5 \
+                    -timeout 25000000 \
+                    -rw_timeout 25000000 \
+                    -analyzeduration 3000000 \
+                    -probesize 3000000 \
+                    -thread_queue_size 512 \
+                    -i "$source_url" \
+                    \
+                    -map 0:v -map 0:a \
+                    -c:v copy -c:a copy \
+                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -hls_flags delete_segments+independent_segments \
+                    -hls_segment_type mpegts \
+                    -hls_segment_filename "$hls_dir/source/${stream_name}_source_%05d.ts" \
+                    -hls_delete_threshold 3 \
+                    "$hls_dir/source/index.m3u8" \
+                    \
+                    -map 0:v -map 0:a \
+                    -vf "scale=1920:1080:flags=fast_bilinear" \
+                    -c:v libx264 -preset ultrafast -tune zerolatency \
+                    -profile:v main -level 3.1 \
+                    -b:v 3000k -maxrate 3300k -bufsize 2000k \
+                    -g 60 -keyint_min 30 -sc_threshold 0 \
+                    -c:a aac -b:a 96k -ac 2 -ar 44100 \
+                    -threads 1 \
+                    -f hls -hls_time 6 -hls_list_size 8 \
+                    -hls_flags delete_segments+independent_segments \
+                    -hls_segment_type mpegts \
+                    -hls_segment_filename "$hls_dir/alt/${stream_name}_1080p_%05d.ts" \
+                    -hls_delete_threshold 3 \
+                    "$hls_dir/alt/index.m3u8" \
+                    > /dev/null 2>&1 &
+                
+                FFMPEG_PIDS[$stream_index]=$!
+                
+                cat > "$hls_dir/master.m3u8" << MASTER_EOF
+#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+source/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=3096000,RESOLUTION=1920x1080,CODECS="avc1.4d401f,mp4a.40.2"
+alt/index.m3u8
+MASTER_EOF
+            fi
 
             echo "✅ $stream_name تم إعادة التشغيل"
         fi
@@ -416,6 +609,9 @@ cleanup() {
         kill $pid 2>/dev/null || true
     done
     kill $NGINX_PID 2>/dev/null || true
+    if [ -n "$SIGNALING_PID" ]; then
+        kill $SIGNALING_PID 2>/dev/null || true
+    fi
     echo "✅ تم الإيقاف"
     exit 0
 }
@@ -426,8 +622,8 @@ trap cleanup SIGTERM SIGINT
 while true; do
     sleep 90
     
-    # تنظيف دوري للذاكرة
-    find "$STREAM_DIR" -name "*.ts" -mmin +3 -delete 2>/dev/null || true
+    # تنظيف دوري للذاكرة (حذف segments > دقيقة ونصف)
+    find "$STREAM_DIR" -name "*.ts" -mmin +2 -delete 2>/dev/null || true
     
     running_count=0
     for pid in "${FFMPEG_PIDS[@]}"; do
