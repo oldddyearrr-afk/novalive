@@ -7,14 +7,19 @@ services:
     plan: starter
     buildCommand: |
       apt-get update
-      apt-get install -y ffmpeg nginx curl bash dos2unix nodejs npm
+      apt-get install -y ffmpeg nginx curl bash dos2unix ca-certificates gnupg
+      curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+      apt-get install -y nodejs
       apt-get clean
       rm -rf /var/lib/apt/lists/*
+      node --version
+      npm --version
       npm install
-      dos2unix render-start.sh perfect_stream.sh
+      dos2unix render-start.sh perfect_stream.sh 2>/dev/null || true
       chmod +x render-start.sh
       chmod +x perfect_stream.sh
       mkdir -p stream/logs public
+      chmod -R 755 public
     startCommand: "bash ./render-start.sh"
     envVars:
       - key: PORT
@@ -31,3 +36,4 @@ services:
       name: stream-data
       mountPath: /app/stream
       sizeGB: 1
+      
