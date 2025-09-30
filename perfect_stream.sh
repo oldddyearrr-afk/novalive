@@ -1,3 +1,4 @@
+
 #!/usr/bin/env bash
 
 # تحسين شامل لـ Render مع ذاكرة محدودة 512MB
@@ -231,6 +232,13 @@ generate_nginx_config
 
 # إنشاء المجلدات بحد أدنى
 mkdir -p "$LOGS_DIR" 2>/dev/null || true
+mkdir -p "$WORK_DIR/public" 2>/dev/null || true
+chmod -R 755 "$WORK_DIR/public" 2>/dev/null || true
+
+# التأكد من وجود player.html
+if [ ! -f "$WORK_DIR/public/player.html" ]; then
+    echo "⚠️ player.html غير موجود في public/"
+fi
 
 for i in "${!SOURCE_URLS[@]}"; do
     STREAM_NAME="${STREAM_NAMES[$i]}"
@@ -366,8 +374,8 @@ alt/index.m3u8
 MASTER_EOF
         
     else
-        # المصدر 720p: ننسخ الأصلي مباشرة + نضيف 1080p
-        echo "📊 إعداد: نسخ مباشر 720p + إضافة 1080p"
+        # المصدر 720p: ننسخ الأصلي مباشرة + نخفض إلى 480p
+        echo "📊 إعداد: نسخ مباشر 720p + تخفيض إلى 480p"
         
         ffmpeg -hide_banner -loglevel warning \
             -fflags +genpts+discardcorrupt+igndts \
@@ -392,17 +400,17 @@ MASTER_EOF
             "$hls_dir/source/index.m3u8" \
             \
             -map 0:v -map 0:a \
-            -vf "scale=1920:1080:flags=fast_bilinear" \
+            -vf "scale=854:480:flags=fast_bilinear" \
             -c:v libx264 -preset ultrafast -tune zerolatency \
-            -profile:v main -level 3.1 \
-            -b:v 3000k -maxrate 3300k -bufsize 2000k \
+            -profile:v main -level 3.0 \
+            -b:v 800k -maxrate 880k -bufsize 600k \
             -g 60 -keyint_min 30 -sc_threshold 0 \
-            -c:a aac -b:a 96k -ac 2 -ar 44100 \
+            -c:a aac -b:a 48k -ac 2 -ar 44100 \
             -threads 1 \
             -f hls -hls_time 6 -hls_list_size 8 \
             -hls_flags delete_segments+independent_segments \
             -hls_segment_type mpegts \
-            -hls_segment_filename "$hls_dir/alt/${stream_name}_1080p_%05d.ts" \
+            -hls_segment_filename "$hls_dir/alt/${stream_name}_480p_%05d.ts" \
             -hls_delete_threshold 3 \
             "$hls_dir/alt/index.m3u8" \
             > /dev/null 2>&1 &
@@ -417,7 +425,7 @@ MASTER_EOF
 #EXT-X-INDEPENDENT-SEGMENTS
 #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
 source/index.m3u8
-#EXT-X-STREAM-INF:BANDWIDTH=3096000,RESOLUTION=1920x1080,CODECS="avc1.4d401f,mp4a.40.2"
+#EXT-X-STREAM-INF:BANDWIDTH=848000,RESOLUTION=854x480,CODECS="avc1.4d401e,mp4a.40.2"
 alt/index.m3u8
 MASTER_EOF
     fi
@@ -536,7 +544,7 @@ alt/index.m3u8
 MASTER_EOF
                 
             else
-                # المصدر 720p: ننسخ الأصلي مباشرة + نضيف 1080p
+                # المصدر 720p: ننسخ الأصلي مباشرة + نخفض إلى 480p
                 ffmpeg -hide_banner -loglevel warning \
                     -fflags +genpts+discardcorrupt+igndts \
                     -user_agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
@@ -560,17 +568,17 @@ MASTER_EOF
                     "$hls_dir/source/index.m3u8" \
                     \
                     -map 0:v -map 0:a \
-                    -vf "scale=1920:1080:flags=fast_bilinear" \
+                    -vf "scale=854:480:flags=fast_bilinear" \
                     -c:v libx264 -preset ultrafast -tune zerolatency \
-                    -profile:v main -level 3.1 \
-                    -b:v 3000k -maxrate 3300k -bufsize 2000k \
+                    -profile:v main -level 3.0 \
+                    -b:v 800k -maxrate 880k -bufsize 600k \
                     -g 60 -keyint_min 30 -sc_threshold 0 \
-                    -c:a aac -b:a 96k -ac 2 -ar 44100 \
+                    -c:a aac -b:a 48k -ac 2 -ar 44100 \
                     -threads 1 \
                     -f hls -hls_time 6 -hls_list_size 8 \
                     -hls_flags delete_segments+independent_segments \
                     -hls_segment_type mpegts \
-                    -hls_segment_filename "$hls_dir/alt/${stream_name}_1080p_%05d.ts" \
+                    -hls_segment_filename "$hls_dir/alt/${stream_name}_480p_%05d.ts" \
                     -hls_delete_threshold 3 \
                     "$hls_dir/alt/index.m3u8" \
                     > /dev/null 2>&1 &
@@ -583,7 +591,7 @@ MASTER_EOF
 #EXT-X-INDEPENDENT-SEGMENTS
 #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
 source/index.m3u8
-#EXT-X-STREAM-INF:BANDWIDTH=3096000,RESOLUTION=1920x1080,CODECS="avc1.4d401f,mp4a.40.2"
+#EXT-X-STREAM-INF:BANDWIDTH=848000,RESOLUTION=854x480,CODECS="avc1.4d401e,mp4a.40.2"
 alt/index.m3u8
 MASTER_EOF
             fi
