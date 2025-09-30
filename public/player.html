@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Stream Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/p2p-media-loader-core@latest/build/p2p-media-loader-core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/p2p-media-loader-hlsjs@latest/build/p2p-media-loader-hlsjs.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        .channels {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .channel-card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            transition: transform 0.3s, box-shadow 0.3s;
+            cursor: pointer;
+        }
+        .channel-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+        }
+        .channel-card h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.5em;
+        }
+        .channel-card button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: opacity 0.3s;
+        }
+        .channel-card button:hover {
+            opacity: 0.9;
+        }
+        .player-container {
+            display: none;
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+        .player-container.active {
+            display: block;
+        }
+        video {
+            width: 100%;
+            max-height: 600px;
+            border-radius: 10px;
+            background: #000;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .stat-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .stat-card .value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .stat-card .label {
+            color: #666;
+            margin-top: 5px;
+        }
+        .back-btn {
+            margin-bottom: 15px;
+            padding: 10px 20px;
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        .back-btn:hover {
+            background: #5a6268;
+        }
+        .p2p-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-left: 10px;
+            animation: pulse 2s infinite;
+        }
+        .p2p-indicator.active {
+            background: #28a745;
+        }
+        .p2p-indicator.inactive {
+            background: #dc3545;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 P2P Stream Player</h1>
+        
+        <div id="channelsGrid" class="channels">
+            <!-- Channels will be loaded here -->
+        </div>
+
+        <div id="playerContainer" class="player-container">
+            <button class="back-btn" onclick="backToChannels()">← العودة للقنوات</button>
+            <video id="video" controls autoplay muted></video>
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="value" id="peers">0</div>
+                    <div class="label">المشاهدون المتصلون <span class="p2p-indicator inactive" id="p2pIndicator"></span></div>
+                </div>
+                <div class="stat-card">
+                    <div class="value" id="downloaded">0 MB</div>
+                    <div class="label">البيانات المحملة</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value" id="uploaded">0 MB</div>
+                    <div class="label">البيانات المشاركة</div>
+                </div>
+                <div class="stat-card">
+                    <div class="value" id="p2pRatio">0%</div>
+                    <div class="label">نسبة التوفير P2P</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const SIGNALING_URL = `${protocol}//${window.location.host}/ws`;
+        const CHANNELS = ['ch1', 'ch2'];
+        
+        let currentHls = null;
+        let p2pEngine = null;
+        let statsInterval = null;
+
+        function loadChannels() {
+            const grid = document.getElementById('channelsGrid');
+            grid.innerHTML = '';
+            
+            CHANNELS.forEach(channel => {
+                const card = document.createElement('div');
+                card.className = 'channel-card';
+                card.innerHTML = `
+                    <h3>📺 ${channel.toUpperCase()}</h3>
+                    <button onclick="playChannel('${channel}')">تشغيل القناة</button>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        function playChannel(channelName) {
+            const video = document.getElementById('video');
+            const masterUrl = `/${channelName}/master.m3u8`;
+
+            document.getElementById('channelsGrid').style.display = 'none';
+            document.getElementById('playerContainer').classList.add('active');
+
+            if (currentHls) {
+                currentHls.destroy();
+            }
+
+            if (p2pml.hlsjs.Engine.isSupported()) {
+                p2pEngine = new p2pml.hlsjs.Engine({
+                    loader: {
+                        trackerAnnounce: [SIGNALING_URL],
+                        rtcConfig: {
+                            iceServers: [
+                                { urls: 'stun:stun.l.google.com:19302' },
+                                { urls: 'stun:global.stun.twilio.com:3478' }
+                            ]
+                        }
+                    },
+                    segments: {
+                        forwardSegmentCount: 20,
+                        swarmId: channelName
+                    }
+                });
+
+                currentHls = new Hls({
+                    liveSyncDurationCount: 7,
+                    loader: p2pEngine.createLoaderClass()
+                });
+
+                p2pEngine.on('peer_connect', () => updateP2PIndicator(true));
+                p2pEngine.on('peer_close', () => checkPeers());
+                
+                startStatsUpdate();
+            } else {
+                currentHls = new Hls();
+            }
+
+            currentHls.loadSource(masterUrl);
+            currentHls.attachMedia(video);
+
+            currentHls.on(Hls.Events.MANIFEST_PARSED, () => {
+                video.play();
+            });
+        }
+
+        function backToChannels() {
+            if (currentHls) {
+                currentHls.destroy();
+                currentHls = null;
+            }
+            if (p2pEngine) {
+                p2pEngine.destroy();
+                p2pEngine = null;
+            }
+            if (statsInterval) {
+                clearInterval(statsInterval);
+                statsInterval = null;
+            }
+
+            document.getElementById('channelsGrid').style.display = 'grid';
+            document.getElementById('playerContainer').classList.remove('active');
+            updateP2PIndicator(false);
+        }
+
+        function startStatsUpdate() {
+            if (statsInterval) clearInterval(statsInterval);
+            
+            statsInterval = setInterval(() => {
+                if (p2pEngine) {
+                    const stats = p2pEngine.getStats();
+                    
+                    document.getElementById('peers').textContent = stats.numPeers || 0;
+                    document.getElementById('downloaded').textContent = 
+                        ((stats.totalHTTPDownloaded || 0) / 1024 / 1024).toFixed(2) + ' MB';
+                    document.getElementById('uploaded').textContent = 
+                        ((stats.totalP2PUploaded || 0) / 1024 / 1024).toFixed(2) + ' MB';
+                    
+                    const totalDownloaded = (stats.totalHTTPDownloaded || 0) + (stats.totalP2PDownloaded || 0);
+                    const p2pRatio = totalDownloaded > 0 
+                        ? ((stats.totalP2PDownloaded || 0) / totalDownloaded * 100).toFixed(1)
+                        : 0;
+                    document.getElementById('p2pRatio').textContent = p2pRatio + '%';
+                }
+            }, 1000);
+        }
+
+        function checkPeers() {
+            if (p2pEngine) {
+                const stats = p2pEngine.getStats();
+                updateP2PIndicator(stats.numPeers > 0);
+            }
+        }
+
+        function updateP2PIndicator(active) {
+            const indicator = document.getElementById('p2pIndicator');
+            indicator.className = 'p2p-indicator ' + (active ? 'active' : 'inactive');
+        }
+
+        window.onload = loadChannels;
+    </script>
+</body>
+  </html>
