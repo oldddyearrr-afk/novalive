@@ -7,6 +7,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.SIGNALING_PORT || 9000;
+const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
 
 const rooms = new Map();
 
@@ -114,6 +115,6 @@ app.get('/stats', (req, res) => {
     });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🔗 P2P Signaling Server running on port ${PORT}`);
+server.listen(PORT, BIND_HOST, () => {
+    console.log(`🔗 P2P Signaling Server running on ${BIND_HOST}:${PORT}`);
 });
